@@ -18,6 +18,7 @@ const moment = require("moment");
 const path = require("path");
 const puppeteer = require("puppeteer");
 const util = require("util");
+const { brotliCompress } = require("zlib");
 
 // Create promise based versions of functions to work in async mode
 const exec = util.promisify(child.exec);
@@ -32,12 +33,14 @@ argv.requiredOption("-u --url <url>", "URL to record (required)");
 argv.option("-b --bits <bits>", "Hash bits per row. Defaults to 12. Larger sizes are more sensitive to small image changes", parseInt);
 argv.option("-c --color <theme>", "Media color theme to set (light or dark). Defaults to light.");
 argv.option("-d --distance <distance>", "Edit distance between hashes to be considered a duplicate. Defaults to 0.", parseInt);
-argv.option("-e --encoding <output encoding", "Output file encoding. Defaults to mp4");
+argv.option("-e --encoding <output encoding>", "Output file encoding. Defaults to mp4");
 argv.option("-f --frames <count>", "Number of frames to use for each video. If empty, will only generate video between active times.", parseInt);
-argv.option("-m --max <seconds>", "Maximum time to wait to schedule in seconds. Defaults to 1 day max.", parseInt);
+argv.option("-fr --framerate <frames per second>", "Video frame rate; 0 means no video output but keep individual frames", parseFloat);
+argv.option("-i --infinite", "Continue running after generating video")
+argv.option("-m --max <seconds>", "Maximum time to wait to schedule in seconds. Defaults to 1 day.", parseInt);
 argv.option("-s --schedule <seconds>", "Generate file every S seconds, with exponential backoff on static content", parseInt);
-argv.option("-w --width <window width>", "Browser view width", parseInt);
-argv.option("-t --height <window height>", "Browser view height", parseInt);
+argv.option("-vw --width <view width>", "Browser view width", parseInt);
+argv.option("-vh --height <view height>", "Browser view height", parseInt);
 
 argv.parse(process.argv);
 
@@ -67,13 +70,28 @@ async function init() {
     // Get hash from last frame
     hash = await imghash.hash(frames[frames.length - 1], argv.bits || 12);
 
-    log(util.format("Recovered %d frames from previous run", frames.length));
-    log("Recovered hash " + hash);
+    log(util.format("Recovered %d frames from previous run, hash %s", frames.length, hash));
+  }
+
+  if (argv.framerate != null) {
+    if (isNaN(argv.framerate)) {
+      throw "Video Frame Rate is NaN"
+    }
   }
 }
 
 /**
- * Generates a single frame. This method only keeps the new frame if it has a 
+ * Abbreviates a string by truncating after maxLen characters if necessary. Appends "..." to truncated strings.
+ */
+function abbr(str, maxLen) {
+  if (str.length <= maxLen) {
+    return str
+  }
+  return str.substring(0, maxLen) + "..."
+}
+
+/**
+ * Generates a single frame. This method only keeps the new frame if it has a
  * different perceptual hash from the previous frame.
  */
 async function run() {
@@ -83,26 +101,34 @@ async function run() {
   // Get frame data
   let data = await frame(output);
 
-  // Build image hash to detect difference from previous frame
-  let newhash = await imghash.hash(data, argv.bits || 12);
-  let distance = argv.distance || 0;
+  // If there is no data go to the next frame (this happens if the web-page didn't load within the specified time)
+  if (data.length == 0) {
 
-  // Check if the frame hash is a duplicate or near duplicate of the previous frame hash
-  if (!hash || leven(hash, newhash) > distance) {
-    // Write data to file
-    await writeFile(output, data);
+    log(util.format("Empty frame"));
 
-    log(util.format("Wrote frame: %s, hash: %s", output, newhash));
-    frames.push(output);
-    duplicates = 0;
+  } else {
+
+    // Build image hash to detect difference from previous frame
+    let newhash = await imghash.hash(data, argv.bits || 12);
+    let distance = argv.distance || 0;
+
+    // Check if the frame hash is a duplicate or near duplicate of the previous frame hash
+    if (!hash || leven(hash, newhash) > distance) {
+      // Write data to file
+      await writeFile(output, data);
+      log(util.format("Wrote frame: %s, hash: %s", output, abbr(newhash, 42)));
+      frames.push(output);
+      duplicates = 0;
+    }
+    else {
+      log(util.format("Duplicate hash %s", abbr(newhash, 42)));
+      duplicates++;
+    }
+
+    // Store new hash
+    hash = newhash;
+
   }
-  else {
-    log(util.format("Duplicate hash %s", newhash));
-    duplicates++;
-  }
-
-  // Store new hash
-  hash = newhash;
 
   // Schedule next execution
   schedule();
@@ -110,7 +136,7 @@ async function run() {
 
 /**
  * Logs a message to the console.
- * 
+ *
  * @param message message to log
  */
 function log(message) {
@@ -132,47 +158,72 @@ async function schedule() {
     // Exponential backoff up to maximum time
     timeout = Math.min(duplicates > 0 ? timeout * Math.pow(2, duplicates) : timeout, max);
 
-    // Build video if activity has went from dynamic to static or the number of frames has elapsed
-    if ((frames.length >= 10 && timeout >= max) || (argv.frames && frames.length >= argv.frames)) {
+    // Build video if activity has gone from dynamic to static or the number of frames has elapsed
+    if ((timeout >= max) || (argv.frames && frames.length >= argv.frames)) {
       await video();
 
       // Reset parameters
       hash = null;
       frames = [];
       duplicates = 0;
-    }
 
-    setTimeout(run, timeout);
+      // Continue running if set
+      if (argv.infinite) {
+        setTimeout(run, timeout);
+      }
+    } else {
+      setTimeout(run, timeout);
+    }
   }
 }
 
 /**
  * Opens puppeteer and generates a screenshot. Stores content in output file.
- * 
+ *
  * @param output output file
  * @returns frame data as Buffer
  */
 async function frame(output) {
-  const browser = await puppeteer.launch();
-  const page = await browser.newPage();
-  if (argv.width && argv.height) {
-    await page.setViewport({width: argv.width, height: argv.height})
+  let browser
+  let page
+  let data = Buffer.alloc(0);
+  try {
+    browser = await puppeteer.launch({headless: "new"});
+    page = await browser.newPage();
+    if (argv.width && argv.height) {
+      await page.setViewport({width: argv.width, height: argv.height})
+    }
+    else {
+      await page.setViewport({width: 960, height: 720})
+    }
+
+    // Set color scheme
+    await page.emulateMediaFeatures([{name: "prefers-color-scheme", value: argv.color === "dark" ? "dark" : "light"}]);
+
+    // Wait for page to render before taking the screenshot
+    await page.goto(argv.url, { waitUntil: "networkidle0", timeout: 60000});
+
+    // Get screenshot as image buffer, defaults to PNG format
+    data = await page.screenshot();
+  } catch (error) {
+    // Ignore timeout and other errors
   }
-  else {
-    await page.setViewport({width: 960, height: 720})
+
+  try {
+    if (page) {
+      await page.close();
+    }
+  } catch (error) {
+    // Ignore timeout and other errors
   }
 
-  // Set color scheme
-  await page.emulateMediaFeatures([{name: "prefers-color-scheme", value: argv.color === "dark" ? "dark" : "light"}]);
-
-  // Wait for page to render before taking the screenshot
-  await page.goto(argv.url, { waitUntil: "networkidle0", timeout: 60000});
-
-  // Get screenshot as image buffer, defaults to PNG format
-  let data = await page.screenshot();
-
-  await page.close();
-  await browser.close();
+  try {
+    if (browser) {
+      await browser.close();
+    }
+  } catch (error) {
+    // Ignore timeout and other errors
+  }
 
   return data;
 }
@@ -182,24 +233,27 @@ async function frame(output) {
  * the video is generated. This method assumes ffmpeg is executable from the default PATH.
  */
 async function video() {
-  let command = "ffmpeg -framerate 0.5 -pattern_type glob -i '%s' \
-                -vf 'mpdecimate,setpts=N/FRAME_RATE/TB,pad=ceil(iw/2)*2:ceil(ih/2)*2' \
-                -pix_fmt yuv420p %s";
- 
-  let files = path.join(argv.output, "*.png");
-  let encoding = argv.encoding || "mp4";
-  let output = path.join(argv.output, moment().format("YYYY-MM-DD_HHmmss") + "." + encoding);
-  command = util.format(command, files, output);
+  let videoFrameRate = argv.framerate != null ? argv.framerate : 0.5
+  if (videoFrameRate != 0) {
+    let command = "ffmpeg -framerate '%f' -pattern_type glob -i '%s' \
+        -vf 'mpdecimate,setpts=N/FRAME_RATE/TB,pad=ceil(iw/2)*2:ceil(ih/2)*2' \
+        -pix_fmt yuv420p %s";
 
-  // Execute ffmpeg conversion
-  await exec(command).then(async () => {
-    // Remove in progress frame files
-    for (let x = 0; x < frames.length; x++) {
-      await unlink(frames[x])
-    }
+    let files = path.join(argv.output, "*.png");
+    let encoding = argv.encoding || "mp4";
+    let output = path.join(argv.output, moment().format("YYYY-MM-DD_HHmmss") + "." + encoding);
+    command = util.format(command, videoFrameRate, files, output);
 
-    log(util.format("Wrote video %s and reset frames", output))
-  })
+    // Execute ffmpeg conversion
+    await exec(command).then(async () => {
+      // Remove in progress frame files
+      for (let x = 0; x < frames.length; x++) {
+        await unlink(frames[x])
+      }
+
+      log(util.format("Wrote video %s and reset frames", output))
+    })
+  }
 }
 
 async function execute() {

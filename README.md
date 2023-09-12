@@ -14,9 +14,10 @@ webelapse has the following features:
  - Generate video after times of frequent change and a return to static content
 
 ## Installation
-webelapse can be installed via npm
+webelapse can be installed globally via npm
 
     npm install -g webelapse
+    webelapse --help
 
 This package assumes [ffmpeg](https://www.ffmpeg.org/) is installed and available on the user's PATH. ffmpeg is required to generate videos.
 
@@ -30,7 +31,7 @@ Take a screenshot of a website on localhost every minute (60 seconds). Duplicate
     webelapse -u http://localhost:8080 -o output -s 60
 
 Record a stream of a website on localhost, taking screenshots every minute (60 seconds). Build video every 30 frames.
- 
+
     webelapse -u http://localhost:8080 -o output -s 60 -f 30
 
 Record a stream of a website on localhost, taking screenshots every minute (60 seconds). Exponentially back off static content, increasing the interval for static content up to 1800 seconds (30 minutes) between frames. Video built dynamically once max backoff time reached.
@@ -50,14 +51,17 @@ Show all options.
 If you do not want to install the package globally, it can be installed in a local directory and executed as (instead of webelapse):
 
     npm install webelapse
-    node node_modules/webelapse/record.js
+    npx webelapse --help
+    node node_modules/webelapse/record.js --help
 
 Alternatively, you can use Git to clone the repository from GitHub:
 
-    git clone https://github.com/davidmezzetti/webelapse.git
+    git clone git@github.com:neuml/webelapse.git
     cd webelapse
-    npm update
-    node record.js
+    npm install
+    npx webelapse --help
+    node record.js --help
+
 
 ## Background
 
