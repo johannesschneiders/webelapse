@@ -32,12 +32,12 @@ argv.requiredOption("-o --output <output directory>", "Output directory (require
 argv.requiredOption("-u --url <url>", "URL to record (required)");
 argv.option("-b --bits <bits>", "Hash bits per row. Defaults to 12. Larger sizes are more sensitive to small image changes", parseInt);
 argv.option("-c --color <theme>", "Media color theme to set (light or dark). Defaults to light.");
-argv.option("-d --distance <distance>", "Edit distance between hashes to be considered a duplicate. Defaults to 0.", parseInt);
+argv.option("-d --distance <distance>", "Edit distance between hashes to be considered a duplicate. Defaults to 0. Use -1 to consider all frames unique", parseInt);
 argv.option("-e --encoding <output encoding>", "Output file encoding. Defaults to mp4");
 argv.option("-f --frames <count>", "Number of frames to use for each video. If empty, will only generate video between active times.", parseInt);
 argv.option("-fr --framerate <frames per second>", "Video frame rate; 0 means no video output but keep individual frames", parseFloat);
-argv.option("-i --infinite", "Continue running after generating video")
-argv.option("-m --max <seconds>", "Maximum time to wait to schedule in seconds. Defaults to 1 day.", parseInt);
+argv.option("-i --infinite", "Continue running indefinitely and keep generating further videos after the first one")
+argv.option("-m --max <seconds>", "Maximum time to wait to schedule in seconds. Defaults to 1 day", parseInt);
 argv.option("-s --schedule <seconds>", "Generate file every S seconds, with exponential backoff on static content", parseInt);
 argv.option("-vw --width <view width>", "Browser view width", parseInt);
 argv.option("-vh --height <view height>", "Browser view height", parseInt);
@@ -207,6 +207,7 @@ async function frame(output) {
     data = await page.screenshot();
   } catch (error) {
     // Ignore timeout and other errors
+    log(error.message)
   }
 
   try {
@@ -215,6 +216,7 @@ async function frame(output) {
     }
   } catch (error) {
     // Ignore timeout and other errors
+    log(error.message)
   }
 
   try {
@@ -223,6 +225,7 @@ async function frame(output) {
     }
   } catch (error) {
     // Ignore timeout and other errors
+    log(error.message)
   }
 
   return data;
